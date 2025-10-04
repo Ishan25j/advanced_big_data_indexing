@@ -56,6 +56,7 @@ pnpm dev
 - `pnpm dev` &mdash; Start development server
 - `docker-compose up -d` &mdash; Start services in background
 - `docker-compose down` &mdash; Stop services
+- `docker exec -it redis_server redis-cli -a advanced_data_indexing`
 
 ---
 
