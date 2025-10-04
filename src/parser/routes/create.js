@@ -22,7 +22,7 @@ router.post('/', validateValidJson, async (req, res) => {
         return res.status(500).send();
     });
     await client.set(objectId, JSON.stringify(req.body));
-    const etagValue = etag(req.body);
+    const etagValue = etag(JSON.stringify(req.body));
     res.set('ETag', etagValue);
     await client.quit();
     return res.status(201).json(req.body);
