@@ -12,8 +12,8 @@
 ### 1. Clone the Repository
 
 ```bash
-git clone <repository-url>
-cd <project-directory>
+git clone https://github.com/Ishan25j/advanced_big_data_indexing.git
+cd advanced_big_data_indexing
 ```
 
 ### 2. Install Dependencies
@@ -56,7 +56,7 @@ pnpm dev
 - `pnpm dev` &mdash; Start development server
 - `docker-compose up -d` &mdash; Start services in background
 - `docker-compose down` &mdash; Stop services
-- `docker exec -it redis_server redis-cli -a advanced_data_indexing`
+- `docker exec -it redis_server redis-cli -a advanced_data_indexing` for interactive redis cli
 
 ---
 
