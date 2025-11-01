@@ -4,8 +4,9 @@ const { client, connectRedis } = require('../utils/services/redis');
 
 const router = express.Router();
 const validateValidJson = require('../middleware/validate_valid_json');
+const validateGoogleToken = require('../middleware/auth');
 
-router.post('/', validateValidJson, async (req, res) => {
+router.post('/', validateGoogleToken, validateValidJson, async (req, res) => {
     if (!req.body.objectId) {
         return res.status(400).send("Bad Request");
     }
