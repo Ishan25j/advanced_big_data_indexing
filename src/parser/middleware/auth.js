@@ -1,17 +1,10 @@
 const { OAuth2Client } = require('google-auth-library');
 const jwt = require('jsonwebtoken');
 
-// Google OAuth2 client for token verification
-// The client ID should be set in environment variables
 const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 
-/**
- * Middleware to validate Google Bearer tokens using RS256
- * Google signs tokens with RS256, and we verify using their public keys
- */
 async function validateGoogleToken(req, res, next) {
     try {
-        // Extract Bearer token from Authorization header
         const authHeader = req.headers['authorization'];
 
         if (!authHeader) {
@@ -21,7 +14,6 @@ async function validateGoogleToken(req, res, next) {
             });
         }
 
-        // Check if it's a Bearer token
         const parts = authHeader.split(' ');
         if (parts.length !== 2 || parts[0] !== 'Bearer') {
             return res.status(401).json({
@@ -32,7 +24,6 @@ async function validateGoogleToken(req, res, next) {
 
         const token = parts[1];
 
-        // Basic token format validation
         const tokenParts = token.split('.');
         if (tokenParts.length !== 3) {
             return res.status(401).json({
@@ -41,9 +32,6 @@ async function validateGoogleToken(req, res, next) {
             });
         }
 
-        // Verify the token using Google's public keys (RS256 verification)
-        // Google automatically fetches and caches the public keys from:
-        // https://www.googleapis.com/oauth2/v3/certs
         const ticket = await client.verifyIdToken({
             idToken: token,
             audience: process.env.GOOGLE_CLIENT_ID, // Verify token is for our app
