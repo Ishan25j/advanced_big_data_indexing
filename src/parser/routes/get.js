@@ -2,8 +2,9 @@ const express = require('express');
 const router = express.Router();
 const { client, connectRedis } = require('../utils/services/redis');
 const etag = require('../utils/etag/etag');
+const validateGoogleToken = require('../middleware/auth');
 
-router.get('/:objectId', async (req, res) => {
+router.get('/:objectId', validateGoogleToken, async (req, res) => {
     const objectId = req.params.objectId;
     await connectRedis();
     try {

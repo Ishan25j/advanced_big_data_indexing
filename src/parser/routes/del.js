@@ -1,8 +1,9 @@
 const express = require('express');
 const router = express.Router();
 const { client, connectRedis } = require('../utils/services/redis');
+const validateGoogleToken = require('../middleware/auth');
 
-router.delete('/:objectId', async (req, res) => {
+router.delete('/:objectId', validateGoogleToken, async (req, res) => {
     const objectId = req.params.objectId;
     await connectRedis();
     try {
