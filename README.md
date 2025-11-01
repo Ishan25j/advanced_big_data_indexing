@@ -1,5 +1,8 @@
 # Advanced Big Data Indexing
 
+**Name**: Ishan Joshi
+**Email**: joshi.ishan@northeastern.edu
+
 A RESTful API for managing healthcare plans with advanced features including:
 - Full CRUD operations (Create, Read, Update, Patch, Delete)
 - Conditional reads and writes using ETags (If-Match, If-None-Match)
