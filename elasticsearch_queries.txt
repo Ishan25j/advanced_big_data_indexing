@@ -1,0 +1,527 @@
+# ============================================
+# ELASTICSEARCH TEST QUERIES FOR HEALTHCARE PLANS
+# Index: healthcare_plans
+# Copy and paste into: http://localhost:5601/app/dev_tools#/console
+# ============================================
+
+
+# ============================================
+# BASIC INDEX OPERATIONS
+# ============================================
+
+# 1. See mapping of the index
+GET /healthcare_plans/_mapping
+
+# 2. Get index settings
+GET /healthcare_plans/_settings
+
+# 3. Check if index exists
+GET /healthcare_plans
+
+# 4. Count total documents
+GET /healthcare_plans/_count
+
+# 5. Delete the entire index (CAREFUL!)
+DELETE /healthcare_plans
+
+
+# ============================================
+# DELETE OPERATIONS
+# ============================================
+
+# 6. Delete all documents (keep index)
+POST /healthcare_plans/_delete_by_query
+{
+  "query": {
+    "match_all": {}
+  }
+}
+
+# 7. Delete documents by objectType
+POST /healthcare_plans/_delete_by_query
+{
+  "query": {
+    "term": {
+      "objectType": "plan"
+    }
+  }
+}
+
+
+# ============================================
+# SEARCH ALL DOCUMENTS
+# ============================================
+
+# 8. Get all documents
+GET /healthcare_plans/_search
+{
+  "query": {
+    "match_all": {}
+  }
+}
+
+# 9. Get all documents (pretty formatted)
+GET /healthcare_plans/_search?pretty=true
+{
+  "query": {
+    "match_all": {}
+  }
+}
+
+
+# ============================================
+# SEARCH BY SPECIFIC FIELDS
+# ============================================
+
+# 10. Search for object by specific objectId
+GET /healthcare_plans/_search
+{
+  "query": {
+    "match": {
+      "objectId": "12xvxc345ssdsds-508"
+    }
+  }
+}
+
+# 11. Search by objectType (all plans)
+GET /healthcare_plans/_search
+{
+  "query": {
+    "term": {
+      "objectType": "plan"
+    }
+  }
+}
+
+# 12. Search by organization
+GET /healthcare_plans/_search
+{
+  "query": {
+    "term": {
+      "_org": "example.com"
+    }
+  }
+}
+
+# 13. Search by planType
+GET /healthcare_plans/_search
+{
+  "query": {
+    "term": {
+      "planType": "inNetwork"
+    }
+  }
+}
+
+
+# ============================================
+# PARENT-CHILD QUERIES (has_child)
+# ============================================
+
+# 14. Find plans that have planCostShares with copay >= 10
+GET /healthcare_plans/_search?pretty=true
+{
+  "query": {
+    "has_child": {
+      "type": "planCostShares",
+      "query": {
+        "range": {
+          "copay": {
+            "gte": 10
+          }
+        }
+      }
+    }
+  }
+}
+
+# 15. Find plans with deductible >= 1000 in planCostShares
+GET /healthcare_plans/_search?pretty=true
+{
+  "query": {
+    "has_child": {
+      "type": "planCostShares",
+      "query": {
+        "range": {
+          "deductible": {
+            "gte": 1000
+          }
+        }
+      }
+    }
+  }
+}
+
+# 16. Find plans that have linkedPlanServices
+GET /healthcare_plans/_search
+{
+  "query": {
+    "has_child": {
+      "type": "linkedPlanServices",
+      "query": {
+        "match_all": {}
+      }
+    }
+  }
+}
+
+# 17. Find linkedPlanServices that have a specific service
+GET /healthcare_plans/_search
+{
+  "query": {
+    "has_child": {
+      "type": "linkedService",
+      "query": {
+        "match": {
+          "name": "Checkup"
+        }
+      }
+    }
+  }
+}
+
+
+# ============================================
+# PARENT-CHILD QUERIES (has_parent)
+# ============================================
+
+# 18. Find all planCostShares that belong to a specific plan
+GET /healthcare_plans/_search
+{
+  "query": {
+    "has_parent": {
+      "parent_type": "plan",
+      "query": {
+        "term": {
+          "objectId": "12xvxc345ssdsds-508"
+        }
+      }
+    }
+  }
+}
+
+# 19. Find all children of plans with specific planType
+GET /healthcare_plans/_search
+{
+  "query": {
+    "has_parent": {
+      "parent_type": "plan",
+      "query": {
+        "term": {
+          "planType": "inNetwork"
+        }
+      }
+    }
+  }
+}
+
+
+# ============================================
+# RANGE QUERIES
+# ============================================
+
+# 20. Search plans created after a specific date
+GET /healthcare_plans/_search
+{
+  "query": {
+    "bool": {
+      "must": [
+        { "term": { "objectType": "plan" } },
+        {
+          "range": {
+            "creationDate": {
+              "gte": "01-01-2024",
+              "format": "dd-MM-yyyy"
+            }
+          }
+        }
+      ]
+    }
+  }
+}
+
+# 21. Find cost shares with deductible between 500 and 2000
+GET /healthcare_plans/_search
+{
+  "query": {
+    "bool": {
+      "must": [
+        { "term": { "objectType": "membercostshare" } },
+        {
+          "range": {
+            "deductible": {
+              "gte": 500,
+              "lte": 2000
+            }
+          }
+        }
+      ]
+    }
+  }
+}
+
+
+# ============================================
+# BOOL QUERIES (Complex Conditions)
+# ============================================
+
+# 22. Plans with specific org AND planType
+GET /healthcare_plans/_search
+{
+  "query": {
+    "bool": {
+      "must": [
+        { "term": { "objectType": "plan" } },
+        { "term": { "_org": "example.com" } },
+        { "term": { "planType": "inNetwork" } }
+      ]
+    }
+  }
+}
+
+# 23. Plans that have high deductible cost shares (>= 1000)
+GET /healthcare_plans/_search
+{
+  "query": {
+    "bool": {
+      "must": [
+        { "term": { "objectType": "plan" } }
+      ],
+      "filter": [
+        {
+          "has_child": {
+            "type": "planCostShares",
+            "query": {
+              "range": {
+                "deductible": { "gte": 1000 }
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}
+
+
+# ============================================
+# AGGREGATIONS
+# ============================================
+
+# 24. Count documents by objectType
+GET /healthcare_plans/_search
+{
+  "size": 0,
+  "aggs": {
+    "types": {
+      "terms": {
+        "field": "objectType"
+      }
+    }
+  }
+}
+
+# 25. Average deductible by organization
+GET /healthcare_plans/_search
+{
+  "size": 0,
+  "query": {
+    "term": { "objectType": "membercostshare" }
+  },
+  "aggs": {
+    "by_org": {
+      "terms": {
+        "field": "_org"
+      },
+      "aggs": {
+        "avg_deductible": {
+          "avg": {
+            "field": "deductible"
+          }
+        }
+      }
+    }
+  }
+}
+
+# 26. Count plans by planType
+GET /healthcare_plans/_search
+{
+  "size": 0,
+  "query": {
+    "term": { "objectType": "plan" }
+  },
+  "aggs": {
+    "plan_types": {
+      "terms": {
+        "field": "planType"
+      }
+    }
+  }
+}
+
+# 27. Stats on deductible values
+GET /healthcare_plans/_search
+{
+  "size": 0,
+  "aggs": {
+    "deductible_stats": {
+      "stats": {
+        "field": "deductible"
+      }
+    }
+  }
+}
+
+
+# ============================================
+# GET SPECIFIC DOCUMENTS
+# ============================================
+
+# 28. Get document by Redis key (plan)
+GET /healthcare_plans/_doc/plan:12xvxc345ssdsds-508
+
+# 29. Get child document by key
+GET /healthcare_plans/_doc/membercostshare:1234vxc2324sdf-501
+
+# 30. Get multiple documents by IDs
+GET /healthcare_plans/_mget
+{
+  "ids": [
+    "plan:12xvxc345ssdsds-508",
+    "membercostshare:1234vxc2324sdf-501"
+  ]
+}
+
+
+# ============================================
+# PARENT-CHILD WITH SCORE
+# ============================================
+
+# 31. Find plans with high cost shares (scored by relevance)
+GET /healthcare_plans/_search
+{
+  "query": {
+    "has_child": {
+      "type": "planCostShares",
+      "score_mode": "max",
+      "query": {
+        "function_score": {
+          "query": {
+            "range": {
+              "deductible": { "gte": 1000 }
+            }
+          },
+          "functions": [
+            {
+              "field_value_factor": {
+                "field": "deductible",
+                "factor": 0.001
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}
+
+
+# ============================================
+# TEXT SEARCH
+# ============================================
+
+# 32. Search services by name
+GET /healthcare_plans/_search
+{
+  "query": {
+    "match": {
+      "name": {
+        "query": "Checkup",
+        "fuzziness": "AUTO"
+      }
+    }
+  }
+}
+
+# 33. Search with wildcard
+GET /healthcare_plans/_search
+{
+  "query": {
+    "wildcard": {
+      "objectId": {
+        "value": "12*"
+      }
+    }
+  }
+}
+
+
+# ============================================
+# SORTING AND PAGINATION
+# ============================================
+
+# 34. Get plans sorted by creation date (newest first)
+GET /healthcare_plans/_search
+{
+  "query": {
+    "term": { "objectType": "plan" }
+  },
+  "sort": [
+    { "creationDate": { "order": "desc" } }
+  ]
+}
+
+# 35. Paginated results (first 10)
+GET /healthcare_plans/_search
+{
+  "query": { "match_all": {} },
+  "from": 0,
+  "size": 10
+}
+
+# 36. Get only specific fields
+GET /healthcare_plans/_search
+{
+  "query": { "match_all": {} },
+  "_source": ["objectId", "objectType", "_org"]
+}
+
+
+# ============================================
+# NESTED PARENT-CHILD QUERIES
+# ============================================
+
+# 37. Find plans -> with linkedPlanServices -> that have specific service name
+GET /healthcare_plans/_search
+{
+  "query": {
+    "has_child": {
+      "type": "linkedPlanServices",
+      "query": {
+        "has_child": {
+          "type": "linkedService",
+          "query": {
+            "match": {
+              "name": "Checkup"
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+
+# ============================================
+# INDEX STATS AND INFO
+# ============================================
+
+# 38. Get detailed stats
+GET /healthcare_plans/_stats
+
+# 39. Get index size
+GET /healthcare_plans/_stats/store
+
+# 40. Refresh index
+POST /healthcare_plans/_refresh

@@ -4,9 +4,32 @@ const { client, connectRedis } = require('../utils/services/redis');
 const etag = require('../utils/etag/etag');
 const validateValidJson = require('../middleware/validate_valid_json');
 const validateGoogleToken = require('../middleware/auth');
+const { generateKey, generateChildrenKey } = require('../utils/keyGenerator');
+const { decompose } = require('../utils/objectDecomposer');
+const { publishIndexUpdate } = require('../../events/publisher');
+
+async function collectKeysToDelete(key, keysToDelete = []) {
+    const exists = await client.exists(key);
+    if (!exists) {
+        return keysToDelete;
+    }
+
+    const childrenKey = generateChildrenKey(key);
+    const children = await client.sMembers(childrenKey);
+    
+    for (const childKey of children) {
+        await collectKeysToDelete(childKey, keysToDelete);
+    }
+
+    keysToDelete.push(key);
+    keysToDelete.push(childrenKey);
+    keysToDelete.push(key + ':metadata');
+
+    return keysToDelete;
+}
 
 router.put('/:objectId', validateGoogleToken, validateValidJson, async (req, res) => {
-    const objectId = req.params.objectId;
+    const { objectId } = req.params;
 
     if (!req.body.objectId || req.body.objectId !== objectId) {
         return res.status(400).send("Bad Request: objectId mismatch");
@@ -15,19 +38,25 @@ router.put('/:objectId', validateGoogleToken, validateValidJson, async (req, res
     await connectRedis();
 
     try {
-        const existingData = await client.get(objectId);
+        const objectType = "plan";
+        
+        if (!req.body.objectType || req.body.objectType !== objectType) {
+            await client.quit();
+            return res.status(400).send("Bad Request: objectType must be 'plan'");
+        }
+
+        const key = generateKey(objectType, objectId);
+        
+        const existingData = await client.get(key);
 
         if (!existingData) {
             await client.quit();
             return res.status(404).send("Not Found");
         }
 
-        // Check If-Match header for conditional update
         const ifMatch = req.headers['if-match'];
         if (ifMatch) {
             const currentETag = etag(existingData);
-
-            // Remove quotes if present in If-Match header
             const normalizedIfMatch = ifMatch.replace(/^"|"$/g, '');
 
             if (normalizedIfMatch !== currentETag) {
@@ -36,19 +65,57 @@ router.put('/:objectId', validateGoogleToken, validateValidJson, async (req, res
             }
         }
 
-        // Update the resource
-        const newData = JSON.stringify(req.body);
-        await client.set(objectId, newData);
+        const keysToDelete = await collectKeysToDelete(key);
+        const decomposedObjects = decompose(req.body);
 
-        // Generate ETag from new data
-        const newETag = etag(newData);
+        const pipeline = client.multi();
+
+        for (const keyToDelete of keysToDelete) {
+            pipeline.del(keyToDelete);
+        }
+
+        for (const obj of decomposedObjects) {
+            pipeline.set(obj.key, JSON.stringify(obj.value));
+
+            if (obj.children && obj.children.length > 0) {
+                const childrenKey = generateChildrenKey(obj.key);
+                pipeline.sAdd(childrenKey, obj.children);
+            }
+
+            const metadataKey = obj.key + ':metadata';
+            const metadata = {
+                objectType: obj.objectType,
+                objectId: obj.objectId,
+                parentKey: obj.parentKey,
+                hasChildren: obj.children.length > 0
+            };
+            pipeline.set(metadataKey, JSON.stringify(metadata));
+        }
+
+        await pipeline.exec();
+
+        // Publish to RabbitMQ for Elasticsearch update
+        await publishIndexUpdate(decomposedObjects);
+
+        const newETag = etag(JSON.stringify(req.body));
         res.set('ETag', newETag);
         await client.quit();
 
-        return res.status(200).json(req.body);
+        return res.status(200).json({
+            message: "Object updated successfully",
+            objectId: req.body.objectId,
+            objectType: req.body.objectType,
+            key: key,
+            decomposedCount: decomposedObjects.length,
+            data: req.body
+        });
+        
     } catch (err) {
-        await client.quit();
-        return res.status(500).send("Internal Server Error");
+        console.error('Error updating object:', err);
+        if (client.isOpen) {
+            await client.quit();
+        }
+        return res.status(500).json({ error: 'Internal server error', message: err.message });
     }
 });
 

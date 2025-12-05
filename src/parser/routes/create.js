@@ -1,33 +1,78 @@
 const express = require('express');
 const etag = require('../utils/etag/etag');
 const { client, connectRedis } = require('../utils/services/redis');
+const { generateKey, generateChildrenKey } = require('../utils/keyGenerator');
+const { decompose } = require('../utils/objectDecomposer');
+const { publishIndexCreate } = require('../../events/publisher');
 
 const router = express.Router();
 const validateValidJson = require('../middleware/validate_valid_json');
 const validateGoogleToken = require('../middleware/auth');
 
 router.post('/', validateGoogleToken, validateValidJson, async (req, res) => {
-    if (!req.body.objectId) {
-        return res.status(400).send("Bad Request");
+    if (!req.body.objectId || !req.body.objectType) {
+        return res.status(400).send("Bad Request: objectId and objectType are required");
     }
-    
-    const objectId = req.body.objectId;
-    await connectRedis();
-    
-    const existingData = await client.get(objectId);
-    if (existingData) {
-        await client.quit();
-        return res.status(409).send();
-    }
-    client.on('error', (err) => {
-        return res.status(500).send();
-    });
-    await client.set(objectId, JSON.stringify(req.body));
-    const etagValue = etag(JSON.stringify(req.body));
-    res.set('ETag', etagValue);
-    await client.quit();
-    return res.status(201).json(req.body);
-});
 
+    await connectRedis();
+
+    try {
+        const rootKey = generateKey(req.body.objectType, req.body.objectId);
+
+        const existingData = await client.get(rootKey);
+        if (existingData) {
+            await client.quit();
+            return res.status(409).send("Object already exists");
+        }
+
+        const decomposedObjects = decompose(req.body);
+
+        const pipeline = client.multi();
+
+        for (const obj of decomposedObjects) {
+            pipeline.set(obj.key, JSON.stringify(obj.value));
+
+            if (obj.children && obj.children.length > 0) {
+                const childrenKey = generateChildrenKey(obj.key);
+                pipeline.sAdd(childrenKey, obj.children);
+            }
+
+            const metadataKey = obj.key + ':metadata';
+            const metadata = {
+                objectType: obj.objectType,
+                objectId: obj.objectId,
+                parentKey: obj.parentKey,
+                hasChildren: obj.children.length > 0
+            };
+            pipeline.set(metadataKey, JSON.stringify(metadata));
+        }
+
+        await pipeline.exec();
+
+        // Publish to RabbitMQ for Elasticsearch indexing
+        await publishIndexCreate(decomposedObjects, req.body);
+
+        const etagValue = etag(JSON.stringify(req.body));
+        res.set('ETag', etagValue);
+
+        await client.quit();
+
+        return res.status(201).json({
+            message: "Object created successfully",
+            objectId: req.body.objectId,
+            objectType: req.body.objectType,
+            key: rootKey,
+            decomposedCount: decomposedObjects.length,
+            data: req.body
+        });
+
+    } catch (error) {
+        console.error('Error creating object:', error);
+        if (client.isOpen) {
+            await client.quit();
+        }
+        return res.status(500).json({ error: 'Internal server error', message: error.message });
+    }
+});
 
 module.exports = router;
