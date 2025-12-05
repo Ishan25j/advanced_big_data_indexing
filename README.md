@@ -1,23 +1,49 @@
 # Advanced Big Data Indexing
 
-**Name**: Ishan Joshi
+**Name**: Ishan Joshi  
 **Email**: joshi.ishan@northeastern.edu
 
-A RESTful API for managing healthcare plans with advanced features including:
-- Full CRUD operations (Create, Read, Update, Patch, Delete)
-- Conditional reads and writes using ETags (If-Match, If-None-Match)
-- Google OAuth 2.0 authentication with RS256 token signing
-- Deep merge support for partial updates (PATCH)
-- Redis-based storage with JSON validation
+A production-ready RESTful API for managing healthcare plans with advanced big data indexing features including parent-child relationships, queuing, and real-time search capabilities.
 
-## Prerequisites
+## 🚀 Features
 
-- [Node.js](https://nodejs.org/) (v16+ recommended)
-- [pnpm](https://pnpm.io/) (v8+ recommended)
-- [Docker](https://www.docker.com/)
-- [docker-compose](https://docs.docker.com/compose/)
+### Core Functionality
+- ✅ **Full CRUD Operations** - Create, Read, Update, Patch, Delete with validation
+- ✅ **Structured JSON Support** - Handle complex nested healthcare plan data
+- ✅ **JSON Schema Validation** - Enforce data integrity using JSON Schema Draft 7
+- ✅ **Deep Merge Support** - Partial updates with PATCH operations
+- ✅ **Cascaded Delete** - Automatically delete parent and all child objects
 
-## Local Setup
+### Advanced Features
+- ✅ **Key Generation System** - Hierarchical keys (`objectType:objectId`) for organized storage
+- ✅ **Object Decomposition** - Nested JSON decomposed into flat key-value pairs
+- ✅ **Parent-Child Tracking** - Maintain relationships between nested objects
+- ✅ **Conditional Operations** - ETags for optimistic locking (If-Match, If-None-Match)
+- ✅ **Update If Not Changed** - Prevent lost updates with ETag validation
+
+### Queuing & Indexing
+- ✅ **RabbitMQ Integration** - Asynchronous message queuing for index operations
+- ✅ **Elasticsearch Indexing** - Parent-child document indexing with join relations
+- ✅ **Real-time Search** - Complex queries including parent-child relationships
+- ✅ **Retry Logic** - Automatic retry on indexing failures (max 3 attempts)
+- ✅ **PATCH to Index** - Partial updates propagate to Elasticsearch
+
+### Security & Performance
+- ✅ **Google OAuth 2.0** - Secure authentication with RS256 token signing
+- ✅ **Redis Storage** - Fast in-memory key-value store
+- ✅ **Atomic Operations** - Redis pipelines ensure data consistency
+
+---
+
+## 📋 Prerequisites
+
+- [Node.js](https://nodejs.org/) v16+ 
+- [pnpm](https://pnpm.io/) v8+
+- [Docker](https://www.docker.com/) & [docker-compose](https://docs.docker.com/compose/)
+
+---
+
+## 🛠️ Local Setup
 
 ### 1. Clone the Repository
 
@@ -34,15 +60,13 @@ pnpm install
 
 ### 3. Environment Variables
 
-Create a `.env` file in the project root (use `.env.example` as template):
+Create a `.env` file in the project root:
 
 ```bash
 cp .env.example .env
 ```
 
-Edit `.env` and update values as needed.
-
-#### Sample `.env` file
+**Sample `.env` file:**
 
 ```env
 # Redis Configuration
@@ -50,12 +74,17 @@ REDIS_HOST=127.0.0.1
 REDIS_PORT=6379
 REDIS_PASSWORD=advanced_data_indexing
 
+# RabbitMQ Configuration
+RABBITMQ_URL=amqp://admin:admin@localhost:5672
+
+# Elasticsearch Configuration
+ES_HOST=http://localhost:9200
+
 # Google OAuth2 Configuration
-# Get this from: https://console.cloud.google.com/apis/credentials
 GOOGLE_CLIENT_ID=your-google-client-id.apps.googleusercontent.com
 ```
 
-**Important**: You must configure Google OAuth 2.0 credentials. See [AUTHENTICATION.md](./AUTHENTICATION.md) for detailed setup instructions.
+**Important**: Configure Google OAuth 2.0 credentials from [Google Cloud Console](https://console.cloud.google.com/apis/credentials). See [AUTHENTICATION.md](./AUTHENTICATION.md) for detailed setup.
 
 ### 4. Start Services with Docker Compose
 
@@ -63,87 +92,477 @@ GOOGLE_CLIENT_ID=your-google-client-id.apps.googleusercontent.com
 docker-compose up -d
 ```
 
+This starts:
+- **Redis** (port 6379) - Key-value storage
+- **RabbitMQ** (ports 5672, 15672) - Message queue
+- **Elasticsearch** (port 9200) - Search engine
+- **Kibana** (port 5601) - Elasticsearch UI
+
 ### 5. Start the Application
 
 ```bash
+# Terminal 1: Start API server
 pnpm dev
+
+# Terminal 2: Start consumer (in a new terminal)
+node src/consumer.js
 ```
 
-Server runs at `http://localhost:3000`
+**Servers:**
+- API: `http://localhost:3000`
+- RabbitMQ Management: `http://localhost:15672` (admin/admin)
+- Kibana Dev Tools: `http://localhost:5601/app/dev_tools#/console`
 
 ---
 
-## API Reference
+## 📖 API Reference
 
 **Base URL**: `http://localhost:3000/v1/plan`
 
-All endpoints require authentication: `Authorization: Bearer YOUR_GOOGLE_TOKEN`
-
-See [AUTHENTICATION.md](./AUTHENTICATION.md) for OAuth setup and token generation.
+All endpoints require: `Authorization: Bearer YOUR_GOOGLE_TOKEN`
 
 ### Endpoints
 
-| Method | Endpoint | Description | Special Headers |
-|--------|----------|-------------|-----------------|
-| POST | `/v1/plan` | Create plan | Returns ETag |
-| GET | `/v1/plan/:id` | Get plan | `If-None-Match` for conditional read |
-| PUT | `/v1/plan/:id` | Replace plan (full) | `If-Match` for conditional write |
-| PATCH | `/v1/plan/:id` | Update plan (merge) | `If-Match` for conditional write |
-| DELETE | `/v1/plan/:id` | Delete plan | - |
+| Method | Endpoint | Description | Returns |
+|--------|----------|-------------|---------|
+| POST | `/v1/plan` | Create a new plan | 201 + ETag |
+| GET | `/v1/plan/:objectId` | Get plan by ID | 200 + ETag or 304 |
+| PUT | `/v1/plan/:objectId` | Replace entire plan | 200 + ETag or 412 |
+| PATCH | `/v1/plan/:objectId` | Partial update (merge) | 200 + ETag or 412 |
+| DELETE | `/v1/plan/:objectId` | Delete plan + children | 204 |
 
 ### Example Requests
 
-**Create**:
+#### Create Plan
+
 ```bash
+POST /v1/plan
+Authorization: Bearer YOUR_TOKEN
+Content-Type: application/json
+
+{
+  "objectId": "plan123",
+  "objectType": "plan",
+  "planType": "inNetwork",
+  "creationDate": "05-12-2024",
+  "_org": "example.com",
+  "planCostShares": {
+    "objectId": "cost456",
+    "objectType": "membercostshare",
+    "deductible": 2000,
+    "copay": 50,
+    "_org": "example.com"
+  },
+  "linkedPlanServices": [
+    {
+      "objectId": "service789",
+      "objectType": "planservice",
+      "_org": "example.com",
+      "linkedService": {
+        "objectId": "srv111",
+        "objectType": "service",
+        "name": "Annual Checkup",
+        "_org": "example.com"
+      },
+      "planserviceCostShares": {
+        "objectId": "srvCost222",
+        "objectType": "membercostshare",
+        "deductible": 100,
+        "copay": 20,
+        "_org": "example.com"
+      }
+    }
+  ]
+}
+```
+
+**Response:**
+```json
+{
+  "message": "Object created successfully",
+  "objectId": "plan123",
+  "objectType": "plan",
+  "key": "plan:plan123",
+  "decomposedCount": 5,
+  "data": { ... }
+}
+```
+
+#### Get Plan
+
+```bash
+GET /v1/plan/plan123
+Authorization: Bearer YOUR_TOKEN
+If-None-Match: "abc123"  # Optional: returns 304 if not modified
+```
+
+**Response (200):**
+```json
+{
+  "objectId": "plan123",
+  "objectType": "plan",
+  "planType": "inNetwork",
+  ...full nested structure...
+}
+```
+
+#### Patch Plan (Partial Update)
+
+```bash
+PATCH /v1/plan/plan123
+Authorization: Bearer YOUR_TOKEN
+If-Match: "abc123"  # Optional: prevents lost updates
+Content-Type: application/json
+
+{
+  "planCostShares": {
+    "deductible": 2500
+  }
+}
+```
+
+**What happens:**
+1. Fetches full plan from Redis
+2. Deep merges your changes
+3. Re-decomposes and stores in Redis
+4. **Publishes to RabbitMQ** → Consumer indexes to Elasticsearch ✨
+
+#### Delete Plan (Cascaded)
+
+```bash
+DELETE /v1/plan/plan123
+Authorization: Bearer YOUR_TOKEN
+```
+
+**What happens:**
+1. Finds all child objects recursively
+2. Deletes from Redis (plan + all children + metadata)
+3. Publishes to RabbitMQ → Consumer deletes from Elasticsearch
+
+---
+
+## 🗄️ Data Storage Architecture
+
+### Redis Key Structure
+
+Each object gets three keys:
+
+```
+plan:plan123                      → Main object data
+plan:plan123:children             → Set of child keys
+plan:plan123:metadata             → Parent info, type, hasChildren flag
+
+membercostshare:cost456           → Child object data
+membercostshare:cost456:metadata  → Parent: plan:plan123
+```
+
+### Parent-Child Relationships
+
+```
+Plan (plan:plan123)
+├── planCostShares (membercostshare:cost456)
+└── linkedPlanServices (planservice:service789)
+    ├── linkedService (service:srv111)
+    └── planserviceCostShares (membercostshare:srvCost222)
+```
+
+---
+
+## 🔍 Elasticsearch Search
+
+### Index Structure
+
+**Index Name**: `healthcare_plans`
+
+**Parent-Child Mapping:**
+```
+plan (root)
+├── planCostShares (child)
+└── linkedPlanServices (child)
+    ├── linkedService (grandchild)
+    └── planserviceCostShares (grandchild)
+```
+
+### Example Queries
+
+Open **Kibana Dev Tools** at `http://localhost:5601/app/dev_tools#/console`
+
+**Get all documents:**
+```json
+GET /healthcare_plans/_search
+{
+  "query": {
+    "match_all": {}
+  }
+}
+```
+
+**Find plans with deductible >= 2000:**
+```json
+GET /healthcare_plans/_search
+{
+  "query": {
+    "has_child": {
+      "type": "planCostShares",
+      "query": {
+        "range": {
+          "deductible": { "gte": 2000 }
+        }
+      }
+    }
+  }
+}
+```
+
+**Find all children of a plan:**
+```json
+GET /healthcare_plans/_search
+{
+  "query": {
+    "has_parent": {
+      "parent_type": "plan",
+      "query": {
+        "term": { "objectId": "plan123" }
+      }
+    }
+  }
+}
+```
+
+📝 **More queries**: See `elasticsearch_queries.txt` (40+ ready-to-use queries)
+
+---
+
+## 🐰 Message Queue Flow
+
+### Create/Update Flow
+
+```
+API POST/PATCH Request
+       ↓
+1. Validate & Decompose
+2. Store in Redis
+3. Publish to RabbitMQ Queue ← queue: index_queue
+       ↓
+Consumer (node src/consumer.js)
+       ↓
+4. Index to Elasticsearch
+```
+
+### Delete Flow
+
+```
+API DELETE Request
+       ↓
+1. Find all children recursively
+2. Delete from Redis (cascaded)
+3. Publish to RabbitMQ Queue
+       ↓
+Consumer
+       ↓
+4. Delete from Elasticsearch (cascaded)
+```
+
+---
+
+## 🧪 Testing
+
+### 1. Check Services
+
+```bash
+# Check all Docker services
+docker-compose ps
+
+# Check Redis
+docker exec -it redis_server redis-cli -a advanced_data_indexing
+127.0.0.1:6379> KEYS *
+
+# Check RabbitMQ
+open http://localhost:15672  # admin/admin
+
+# Check Elasticsearch
+curl http://localhost:9200/_cluster/health?pretty
+```
+
+### 2. Test API
+
+```bash
+# Create a plan
 curl -X POST http://localhost:3000/v1/plan \
-  -H "Authorization: Bearer TOKEN" \
+  -H "Authorization: Bearer YOUR_TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"objectId": "plan123", "planName": "Health Plan", "cost": 1000}'
+  -d @sample_plan.json
+
+# Get the plan
+curl http://localhost:3000/v1/plan/plan123 \
+  -H "Authorization: Bearer YOUR_TOKEN"
 ```
 
-**Get** (saves ETag for later):
+### 3. Verify in Elasticsearch
+
+**In Kibana Dev Tools:**
+```json
+GET /healthcare_plans/_search
+
+GET /healthcare_plans/_search
+{
+  "size": 0,
+  "aggs": {
+    "types": {
+      "terms": { "field": "objectType" }
+    }
+  }
+}
+```
+
+---
+
+## 📂 Project Structure
+
+```
+.
+├── src/
+│   ├── app.js                 # Express app setup
+│   ├── index.js               # Server entry point
+│   ├── consumer.js            # RabbitMQ consumer starter
+│   ├── events/                # Queuing & Indexing
+│   │   ├── rabbitmq.js        # RabbitMQ connection
+│   │   ├── publisher.js       # Publish index operations
+│   │   ├── consumer.js        # Consume & index to ES
+│   │   └── elasticsearch.js   # ES client & operations
+│   └── parser/
+│       ├── routes/            # API endpoints
+│       │   ├── create.js      # POST /v1/plan
+│       │   ├── get.js         # GET /v1/plan/:id
+│       │   ├── update.js      # PUT /v1/plan/:id
+│       │   ├── patch.js       # PATCH /v1/plan/:id
+│       │   └── del.js         # DELETE /v1/plan/:id
+│       ├── middleware/        # Auth & Validation
+│       │   ├── auth.js        # Google OAuth validation
+│       │   └── validate_valid_json.js
+│       └── utils/
+│           ├── keyGenerator.js        # Generate Redis keys
+│           ├── objectDecomposer.js    # Decompose nested JSON
+│           ├── etag/etag.js           # ETag generation
+│           ├── services/redis.js      # Redis client
+│           └── models/schema.json     # JSON schema
+├── docker-compose.yml         # Services config
+├── elasticsearch_queries.txt  # 40+ test queries
+├── package.json
+└── README.md
+```
+
+---
+
+## 🎯 Demo Requirements Coverage
+
+| Requirement | Status | Implementation |
+|-------------|--------|----------------|
+| REST API with CRUD | ✅ | All routes in `src/parser/routes/` |
+| Handle structured JSON | ✅ | JSON schema validation |
+| Merge support | ✅ | Deep merge in PATCH route |
+| Cascaded delete | ✅ | Recursive delete from KV + ES |
+| Validation | ✅ | JSON Schema Draft 7 + AJV |
+| Update if not changed | ✅ | ETag with If-Match header |
+| Key-value store | ✅ | Redis with hierarchical keys |
+| Parent-child indexing | ✅ | ES join field with relations |
+| PATCH to index | ✅ | Queue → Consumer → ES |
+| Queueing | ✅ | RabbitMQ with retry logic |
+| Security | ✅ | Google OAuth 2.0 |
+
+---
+
+## 🔧 Useful Commands
+
 ```bash
-curl -i http://localhost:3000/v1/plan/plan123 \
-  -H "Authorization: Bearer TOKEN"
-# Response includes: ETag: abc123
+# Development
+pnpm install              # Install dependencies
+pnpm dev                  # Start API server
+node src/consumer.js      # Start consumer
+
+# Docker
+docker-compose up -d      # Start all services
+docker-compose down       # Stop all services
+docker-compose ps         # Check service status
+docker-compose logs -f    # View logs
+
+# Redis CLI
+docker exec -it redis_server redis-cli -a advanced_data_indexing
+> KEYS *
+> GET plan:plan123
+> SMEMBERS plan:plan123:children
+
+# RabbitMQ
+open http://localhost:15672   # Management UI
+
+# Elasticsearch
+open http://localhost:5601    # Kibana
+curl http://localhost:9200/_cat/indices?v
 ```
 
-**Update with ETag check**:
-```bash
-curl -X PATCH http://localhost:3000/v1/plan/plan123 \
-  -H "Authorization: Bearer TOKEN" \
-  -H "If-Match: abc123" \
-  -H "Content-Type: application/json" \
-  -d '{"cost": 1500}'
-# Returns 412 if resource was modified by someone else
-```
+---
+
+## 🐛 Troubleshooting
+
+### API Issues
+
+**401 Unauthorized**
+- Check Google token validity (tokens expire after ~1 hour)
+- Verify `GOOGLE_CLIENT_ID` in `.env`
+- See [AUTHENTICATION.md](./AUTHENTICATION.md)
+
+**500 Internal Server Error**
+- Check Redis is running: `docker-compose ps`
+- Check logs: `docker-compose logs redis`
+
+### Elasticsearch Issues
+
+**No search results**
+- **Consumer not running**: Start with `node src/consumer.js`
+- Check RabbitMQ queue: http://localhost:15672
+- Check messages are being processed in consumer logs
+
+**Index not found**
+- Consumer creates index on first start
+- Manually create: See `src/events/elasticsearch.js`
+
+### RabbitMQ Issues
+
+**Connection refused**
+- Ensure RabbitMQ is running: `docker-compose ps`
+- Check URL in `.env`: `RABBITMQ_URL=amqp://admin:admin@localhost:5672`
+
+**Messages not being consumed**
+- Restart consumer: `node src/consumer.js`
+- Check queue has consumers in management UI
 
 ---
 
-## Key Features
+## 📚 Additional Documentation
 
-- **ETags**: Prevent lost updates (conditional writes) and reduce bandwidth (conditional reads)
-- **PUT vs PATCH**: PUT replaces entire resource, PATCH merges changes
-- **OAuth 2.0**: Google IDP with RS256 token signing
-- **Redis Storage**: Fast in-memory data store
+- [AUTHENTICATION.md](./AUTHENTICATION.md) - Google OAuth setup guide
+- [elasticsearch_queries.txt](./elasticsearch_queries.txt) - 40+ test queries for Kibana
 
 ---
 
-## Useful Commands
+## 🤝 Contributing
 
-- `pnpm install` &mdash; Install dependencies
-- `pnpm dev` &mdash; Start development server
-- `docker-compose up -d` &mdash; Start services in background
-- `docker-compose down` &mdash; Stop services
-- `docker exec -it redis_server redis-cli -a advanced_data_indexing` for interactive redis cli
+1. Fork the repository
+2. Create a feature branch
+3. Commit your changes
+4. Push to the branch
+5. Open a Pull Request
 
 ---
 
-## Troubleshooting
+## 📄 License
 
-- **401 Unauthorized**: Check your Google token is valid and not expired (tokens last ~1 hour)
-- **Redis connection failed**: Ensure `docker-compose up -d` is running
-- **Missing GOOGLE_CLIENT_ID**: Set up OAuth credentials in [Google Cloud Console](https://console.cloud.google.com/apis/credentials)
+ISC
 
-For detailed auth setup, see [AUTHENTICATION.md](./AUTHENTICATION.md)
+---
 
+## 👤 Author
+
+**Ishan Joshi**  
+Email: joshi.ishan@northeastern.edu  
+GitHub: [@Ishan25j](https://github.com/Ishan25j)
