@@ -3,9 +3,15 @@
  */
 
 const { Client } = require('@elastic/elasticsearch');
+const { parseKey } = require('../parser/utils/keyGenerator');
 
 const ES_HOST = process.env.ES_HOST || 'http://localhost:9200';
 const INDEX_NAME = 'healthcare_plans';
+
+// Toggle between minimal and full object storage
+// MINIMAL: Only stores objectId, objectType, _org, and direct fields (copay, deductible, name)
+// FULL: Stores complete object with all nested references
+const ES_STORAGE_MODE = process.env.ES_STORAGE_MODE || 'MINIMAL'; // Options: 'MINIMAL' or 'FULL'
 
 const esClient = new Client({
   node: ES_HOST,
@@ -13,14 +19,83 @@ const esClient = new Client({
   maxRetries: 3
 });
 
-// Map objectType to Elasticsearch join field names
-const OBJECT_TYPE_TO_JOIN_NAME = {
-  'plan': 'plan',
-  'membercostshare': 'planCostShares',
-  'planservice': 'linkedPlanServices',
-  'service': 'linkedService',
-  'planservicecostshare': 'planserviceCostShares'
-};
+/**
+ * Determine join name based on objectType AND parent context
+ */
+function getJoinName(objectType, parentKey) {
+  const normalizedType = objectType.toLowerCase();
+  
+  if (!parentKey) {
+    return normalizedType;
+  }
+  
+  const { objectType: parentObjectType } = parseKey(parentKey);
+  
+  if (normalizedType === 'membercostshare') {
+    if (parentObjectType === 'plan') {
+      return 'planCostShares';
+    }
+    if (parentObjectType === 'planservice') {
+      return 'planserviceCostShares';
+    }
+  }
+  
+  const mappings = {
+    'plan': 'plan',
+    'planservice': 'linkedPlanServices',
+    'service': 'linkedService'
+  };
+  
+  return mappings[normalizedType] || normalizedType;
+}
+
+/**
+ * Prepare document for indexing based on storage mode
+ */
+function prepareDocument(data, objectType, objectId, joinName, parentKey) {
+  // In MINIMAL mode, parent field should be simple objectId
+  // In FULL mode, parent field should be full key (type:objectId)
+  const parentValue = parentKey ? (
+    ES_STORAGE_MODE === 'MINIMAL' ? parseKey(parentKey).objectId : parentKey
+  ) : null;
+
+  const baseDocument = {
+    objectType,
+    objectId,
+    _org: data._org,
+    plan_join: parentKey ? {
+      name: joinName,
+      parent: parentValue
+    } : joinName
+  };
+
+  if (ES_STORAGE_MODE === 'MINIMAL') {
+    // MINIMAL mode: Only store metadata + direct scalar fields
+    // Don't store nested object references
+    const minimalDoc = { ...baseDocument };
+
+    // Add direct scalar fields (not nested objects)
+    const directFields = ['planType', 'creationDate', 'deductible', 'copay', 'name'];
+    directFields.forEach(field => {
+      if (data[field] !== undefined && typeof data[field] !== 'object') {
+        minimalDoc[field] = data[field];
+      }
+    });
+
+    console.log('Elasticsearch: Using MINIMAL storage mode');
+    return minimalDoc;
+
+  } else {
+    // FULL mode: Store complete object
+    console.log('Elasticsearch: Using FULL storage mode');
+    return {
+      ...data,
+      objectType,
+      objectId,
+      plan_join: baseDocument.plan_join
+    };
+  }
+}
 
 /**
  * Initialize Elasticsearch index with parent-child mappings
@@ -67,6 +142,7 @@ async function initializeIndex() {
     });
 
     console.log('Elasticsearch: Index created successfully:', INDEX_NAME);
+    console.log('Elasticsearch: Storage mode:', ES_STORAGE_MODE);
   } catch (error) {
     console.error('Error initializing Elasticsearch index:', error);
     throw error;
@@ -77,28 +153,33 @@ async function indexDocument(key, data, metadata) {
   try {
     const { objectType, objectId, parentKey } = metadata;
     
-    // Map objectType to ES join field name
-    const joinName = OBJECT_TYPE_TO_JOIN_NAME[objectType.toLowerCase()] || objectType;
+    const joinName = getJoinName(objectType, parentKey);
 
-    const document = {
-      ...data,
-      objectType,
-      objectId,
-      plan_join: parentKey ? {
-        name: joinName,
-        parent: parentKey
-      } : joinName
-    };
+    // Prepare document based on storage mode (MINIMAL or FULL)
+    const document = prepareDocument(data, objectType, objectId, joinName, parentKey);
+
+    // Determine document ID and routing based on storage mode
+    let docId, routing;
+    
+    if (ES_STORAGE_MODE === 'MINIMAL') {
+      // Use simple objectId (matches reference implementation)
+      docId = objectId;
+      routing = parentKey ? parseKey(parentKey).objectId : objectId;
+    } else {
+      // Use full key with type prefix (more robust)
+      docId = key;
+      routing = parentKey || key;
+    }
 
     const result = await esClient.index({
       index: INDEX_NAME,
-      id: key,
-      routing: parentKey || key,
+      id: docId,
+      routing: routing,
       body: document,
       refresh: 'wait_for'
     });
 
-    console.log('Elasticsearch: Indexed', joinName, 'document:', key);
+    console.log('Elasticsearch: Indexed', joinName, 'document:', docId);
     return result;
   } catch (error) {
     console.error('Error indexing document to Elasticsearch:', error);
@@ -107,19 +188,31 @@ async function indexDocument(key, data, metadata) {
 }
 
 async function deleteDocument(key, parentKey = null) {
+  // Determine document ID based on storage mode
+  let docId, routing;
+
   try {
+    if (ES_STORAGE_MODE === 'MINIMAL') {
+      const { objectId } = parseKey(key);
+      docId = objectId;
+      routing = parentKey ? parseKey(parentKey).objectId : objectId;
+    } else {
+      docId = key;
+      routing = parentKey || key;
+    }
+
     const result = await esClient.delete({
       index: INDEX_NAME,
-      id: key,
-      routing: parentKey || key,
+      id: docId,
+      routing: routing,
       refresh: 'wait_for'
     });
 
-    console.log('Elasticsearch: Deleted document:', key);
+    console.log('Elasticsearch: Deleted document:', docId);
     return result;
   } catch (error) {
     if (error.meta && error.meta.statusCode === 404) {
-      console.log('Elasticsearch: Document not found for deletion:', key);
+      console.log('Elasticsearch: Document not found for deletion:', docId);
       return null;
     }
     console.error('Error deleting document from Elasticsearch:', error);
@@ -151,11 +244,23 @@ async function searchDocuments(query) {
 }
 
 async function getDocument(key, parentKey = null) {
+  // Determine document ID based on storage mode
+  let docId, routing;
+
   try {
+    if (ES_STORAGE_MODE === 'MINIMAL') {
+      const { objectId } = parseKey(key);
+      docId = objectId;
+      routing = parentKey ? parseKey(parentKey).objectId : objectId;
+    } else {
+      docId = key;
+      routing = parentKey || key;
+    }
+
     const result = await esClient.get({
       index: INDEX_NAME,
-      id: key,
-      routing: parentKey || key
+      id: docId,
+      routing: routing
     });
 
     return result._source;
@@ -188,5 +293,6 @@ module.exports = {
   searchDocuments,
   getDocument,
   healthCheck,
-  INDEX_NAME
+  INDEX_NAME,
+  ES_STORAGE_MODE
 };

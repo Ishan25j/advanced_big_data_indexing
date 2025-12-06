@@ -85,14 +85,17 @@ async function publishIndexCreate(decomposedObjects, fullObject) {
 /**
  * Publish DELETE operation
  */
-async function publishIndexDelete(key, childKeys = []) {
+async function publishIndexDelete(key, childKeys = [], parentKeyMap = new Map()) {
   try {
+    // Publish delete for all children/descendants with their parent keys
     for (const childKey of childKeys) {
       await publishIndexOperation(OPERATIONS.DELETE, null, {
-        key: childKey
+        key: childKey,
+        parentKey: parentKeyMap.get(childKey) || null
       });
     }
 
+    // Publish delete for the root object
     await publishIndexOperation(OPERATIONS.DELETE, null, {
       key,
       childKeys

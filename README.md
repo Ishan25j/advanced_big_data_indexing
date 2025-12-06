@@ -24,6 +24,7 @@ A production-ready RESTful API for managing healthcare plans with advanced big d
 ### Queuing & Indexing
 - ✅ **RabbitMQ Integration** - Asynchronous message queuing for index operations
 - ✅ **Elasticsearch Indexing** - Parent-child document indexing with join relations
+- ✅ **Storage Mode Toggle** - MINIMAL (reference format) or FULL (complete objects)
 - ✅ **Real-time Search** - Complex queries including parent-child relationships
 - ✅ **Retry Logic** - Automatic retry on indexing failures (max 3 attempts)
 - ✅ **PATCH to Index** - Partial updates propagate to Elasticsearch
@@ -79,6 +80,10 @@ RABBITMQ_URL=amqp://admin:admin@localhost:5672
 
 # Elasticsearch Configuration
 ES_HOST=http://localhost:9200
+
+# Elasticsearch Storage Mode
+# Options: 'MINIMAL' or 'FULL' (default: FULL)
+ES_STORAGE_MODE=FULL
 
 # Google OAuth2 Configuration
 GOOGLE_CLIENT_ID=your-google-client-id.apps.googleusercontent.com
@@ -333,6 +338,128 @@ GET /healthcare_plans/_search
 
 ---
 
+## ⚙️ Elasticsearch Storage Modes
+
+The system supports two storage modes for Elasticsearch indexing, configurable via the `ES_STORAGE_MODE` environment variable.
+
+### MINIMAL Mode (Reference Format)
+
+**Use when:**
+- You want to match the reference implementation exactly
+- You need minimal storage overhead
+- You only care about searchable fields
+
+**Document Structure:**
+```json
+{
+  "_id": "27283xvx9sdf-507",
+  "_routing": "12xvxc345ssdsds-508",
+  "_source": {
+    "objectId": "27283xvx9sdf-507",
+    "objectType": "planservice",
+    "_org": "example.com",
+    "copay": 175,
+    "deductible": 10,
+    "plan_join": {
+      "name": "linkedPlanServices",
+      "parent": "12xvxc345ssdsds-508"
+    }
+  }
+}
+```
+
+**Stored Fields:**
+- ✅ `objectId`, `objectType`, `_org`
+- ✅ Direct scalar fields: `planType`, `creationDate`, `deductible`, `copay`, `name`
+- ❌ No nested object references
+
+### FULL Mode (Default - Enhanced)
+
+**Use when:**
+- You want complete object data in Elasticsearch
+- You need to see child references
+- You want easier debugging
+- You want type-safe document IDs
+
+**Document Structure:**
+```json
+{
+  "_id": "planservice:27283xvx9sdf-507",
+  "_routing": "plan:12xvxc345ssdsds-508",
+  "_source": {
+    "objectId": "27283xvx9sdf-507",
+    "objectType": "planservice",
+    "_org": "example.com",
+    "linkedService": {
+      "objectId": "1234520xvc30sfs-505",
+      "objectType": "service",
+      "_org": "example.com"
+    },
+    "planserviceCostShares": {
+      "objectId": "1234512xvc1314sdfsd-506",
+      "objectType": "membercostshare",
+      "_org": "example.com"
+    },
+    "plan_join": {
+      "name": "linkedPlanServices",
+      "parent": "plan:12xvxc345ssdsds-508"
+    }
+  }
+}
+```
+
+**Stored Fields:**
+- ✅ Complete decomposed object structure
+- ✅ All nested object references
+- ✅ Type-prefixed document IDs (prevents collisions)
+- ✅ Type-prefixed routing
+
+### Mode Comparison
+
+| Feature | MINIMAL | FULL |
+|---------|---------|------|
+| Document ID | `objectId` | `type:objectId` |
+| Routing | `parentObjectId` | `type:parentObjectId` |
+| Nested References | ❌ Not stored | ✅ Stored |
+| Collision Safety | ⚠️ Possible if IDs overlap | ✅ Type-prefixed |
+| Storage Size | 🟢 Smaller | 🟡 Larger |
+| Debug Info | 🟡 Limited | 🟢 Complete |
+
+### Switching Modes
+
+**1. Update `.env`:**
+```bash
+# For minimal mode (reference format)
+ES_STORAGE_MODE=MINIMAL
+
+# For full mode (default)
+ES_STORAGE_MODE=FULL
+```
+
+**2. Delete existing index in Kibana Dev Tools:**
+```
+DELETE /healthcare_plans
+```
+
+**3. Restart consumer:**
+```bash
+# Stop current consumer (Ctrl+C)
+# Start new consumer
+node src/consumer.js
+```
+
+**4. Re-index data:**
+```bash
+# Create your plans again via API
+POST http://localhost:3000/v1/plan
+```
+
+**Note:** Both modes are **functionally equivalent** for search queries! The difference is only in what data is stored in Elasticsearch documents.
+
+📝 **Detailed comparison**: See [ES_STORAGE_MODES.md](./ES_STORAGE_MODES.md)
+
+---
+
 ## 🐰 Message Queue Flow
 
 ### Create/Update Flow
@@ -526,6 +653,12 @@ curl http://localhost:9200/_cat/indices?v
 - Consumer creates index on first start
 - Manually create: See `src/events/elasticsearch.js`
 
+**Query results look different than expected**
+- Check `ES_STORAGE_MODE` in `.env` (MINIMAL vs FULL)
+- MINIMAL mode stores minimal metadata (matches reference)
+- FULL mode stores complete objects (better debugging)
+- See [ES_STORAGE_MODES.md](./ES_STORAGE_MODES.md) for details
+
 ### RabbitMQ Issues
 
 **Connection refused**
@@ -541,6 +674,7 @@ curl http://localhost:9200/_cat/indices?v
 ## 📚 Additional Documentation
 
 - [AUTHENTICATION.md](./AUTHENTICATION.md) - Google OAuth setup guide
+- [ES_STORAGE_MODES.md](./ES_STORAGE_MODES.md) - Elasticsearch storage mode comparison
 - [elasticsearch_queries.txt](./elasticsearch_queries.txt) - 40+ test queries for Kibana
 
 ---

@@ -5,24 +5,34 @@ const validateGoogleToken = require('../middleware/auth');
 const { generateKey, generateChildrenKey } = require('../utils/keyGenerator');
 const { publishIndexDelete } = require('../../events/publisher');
 
-async function cascadeDelete(key, keysToDelete = []) {
+async function cascadeDelete(key, keysToDelete = [], parentKeyMap = new Map()) {
     const exists = await client.exists(key);
     if (!exists) {
-        return keysToDelete;
+        return { keysToDelete, parentKeyMap };
+    }
+
+    // Get metadata to store parent relationship before deletion
+    const metadataKey = key + ':metadata';
+    const metadataStr = await client.get(metadataKey);
+    if (metadataStr) {
+        const metadata = JSON.parse(metadataStr);
+        if (metadata.parentKey) {
+            parentKeyMap.set(key, metadata.parentKey);
+        }
     }
 
     const childrenKey = generateChildrenKey(key);
     const children = await client.sMembers(childrenKey);
-    
+
     for (const childKey of children) {
-        await cascadeDelete(childKey, keysToDelete);
+        await cascadeDelete(childKey, keysToDelete, parentKeyMap);
     }
 
     keysToDelete.push(key);
     keysToDelete.push(childrenKey);
-    keysToDelete.push(key + ':metadata');
+    keysToDelete.push(metadataKey);
 
-    return keysToDelete;
+    return { keysToDelete, parentKeyMap };
 }
 
 router.delete('/:objectId', validateGoogleToken, async (req, res) => {
@@ -40,12 +50,17 @@ router.delete('/:objectId', validateGoogleToken, async (req, res) => {
             return res.status(404).send("Not Found");
         }
         
-        const keysToDelete = await cascadeDelete(key);
-        
-        // Extract child keys for Elasticsearch deletion
-        const childrenKey = generateChildrenKey(key);
-        const childKeys = await client.sMembers(childrenKey);
-        
+        const { keysToDelete, parentKeyMap } = await cascadeDelete(key);
+
+        // Extract all object keys (not metadata or children keys) for Elasticsearch deletion
+        // This ensures ALL descendants (children, grandchildren, etc.) are deleted from ES
+        const objectKeys = keysToDelete.filter(k =>
+            !k.endsWith(':children') && !k.endsWith(':metadata')
+        );
+
+        // Remove the root key from the list (it will be passed separately to publishIndexDelete)
+        const childKeys = objectKeys.filter(k => k !== key);
+
         if (keysToDelete.length > 0) {
             const pipeline = client.multi();
             for (const keyToDelete of keysToDelete) {
@@ -53,9 +68,11 @@ router.delete('/:objectId', validateGoogleToken, async (req, res) => {
             }
             await pipeline.exec();
         }
-        
+
         // Publish to RabbitMQ for Elasticsearch deletion
-        await publishIndexDelete(key, childKeys);
+        // childKeys now includes ALL descendants (children + grandchildren + ...)
+        // parentKeyMap contains parent relationships for proper routing
+        await publishIndexDelete(key, childKeys, parentKeyMap);
         
         await client.quit();
         
