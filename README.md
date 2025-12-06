@@ -143,10 +143,15 @@ pnpm dev
 node src/consumer.js
 ```
 
-**Service URLs:**
-- API: `http://localhost:3000`
-- RabbitMQ Management: `http://localhost:15672` (admin/admin)
-- Kibana Dev Tools: `http://localhost:5601/app/dev_tools#/console`
+**Service Endpoints:**
+- **API Server**: `http://localhost:3000`
+- **Redis**:
+  - Host: `localhost:6379`
+  - Password: `advanced_data_indexing`
+  - CLI: `docker exec -it redis_server redis-cli -a advanced_data_indexing`
+- **RabbitMQ Management UI**: `http://localhost:15672` (user: `admin`, pass: `admin`)
+- **Elasticsearch**: `http://localhost:9200`
+- **Kibana Dev Tools**: `http://localhost:5601/app/dev_tools#/console`
 
 ---
 
