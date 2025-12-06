@@ -6,16 +6,48 @@ const validateValidJson = require('../middleware/validate_valid_json');
 const validateGoogleToken = require('../middleware/auth');
 const { generateKey, generateChildrenKey, generateMetadataKey } = require('../utils/keyGenerator');
 const { decompose, recompose } = require('../utils/objectDecomposer');
-const { publishIndexUpdate } = require('../../events/publisher');
+const { publishIndexUpdate, publishIndexDelete } = require('../../events/publisher');
 
 function deepMerge(target, source) {
     const result = { ...target };
 
     for (const key in source) {
         if (source.hasOwnProperty(key)) {
-            if (source[key] && typeof source[key] === 'object' && !Array.isArray(source[key])) {
+            if (Array.isArray(source[key])) {
+                // Smart array merging by objectId
+                const targetArray = Array.isArray(result[key]) ? result[key] : [];
+                const sourceArray = source[key];
+
+                // Create a map of existing items by objectId
+                const mergedMap = new Map();
+
+                // Add all existing items to map
+                targetArray.forEach(item => {
+                    if (item && item.objectId) {
+                        mergedMap.set(item.objectId, item);
+                    }
+                });
+
+                // Merge or add items from source
+                sourceArray.forEach(sourceItem => {
+                    if (sourceItem && sourceItem.objectId) {
+                        const existingItem = mergedMap.get(sourceItem.objectId);
+                        if (existingItem) {
+                            // Update existing item (deep merge)
+                            mergedMap.set(sourceItem.objectId, deepMerge(existingItem, sourceItem));
+                        } else {
+                            // Add new item
+                            mergedMap.set(sourceItem.objectId, sourceItem);
+                        }
+                    }
+                });
+
+                result[key] = Array.from(mergedMap.values());
+            } else if (source[key] && typeof source[key] === 'object') {
+                // Deep merge objects
                 result[key] = deepMerge(result[key] || {}, source[key]);
             } else {
+                // Replace primitives
                 result[key] = source[key];
             }
         }
@@ -136,7 +168,13 @@ router.patch('/:objectId', validateGoogleToken, validateValidJson, async (req, r
 
         await pipeline.exec();
 
-        // Publish to RabbitMQ for Elasticsearch indexing
+        // Publish DELETE operations for truly removed children to Elasticsearch
+        if (keysToDeleteFromES.length > 0) {
+            console.log(`PATCH: Deleting ${keysToDeleteFromES.length} removed children from Elasticsearch`);
+            await publishIndexDelete(null, keysToDeleteFromES, parentKeyMap);
+        }
+
+        // Publish UPDATE operations for new data to Elasticsearch
         // This satisfies the demo requirement: "PATCH working all the way to the index"
         await publishIndexUpdate(decomposedObjects);
 
