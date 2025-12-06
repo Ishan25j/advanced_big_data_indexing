@@ -142,6 +142,30 @@ router.patch('/:objectId', validateGoogleToken, validateValidJson, async (req, r
         const keysToDelete = await collectKeysToDelete(key);
         const decomposedObjects = decompose(mergedObject);
 
+        // Find keys that are actually being removed (in old but not in new)
+        const oldObjectKeys = keysToDelete.filter(k =>
+            !k.endsWith(':children') && !k.endsWith(':metadata') && k !== key
+        );
+
+        const newObjectKeys = new Set(
+            decomposedObjects.map(obj => obj.key)
+        );
+
+        // Only delete from ES if key is truly removed (not just updated)
+        const keysToDeleteFromES = oldObjectKeys.filter(k => !newObjectKeys.has(k));
+
+        const parentKeyMap = new Map();
+        for (const oldKey of keysToDeleteFromES) {
+            const metadataKey = generateMetadataKey(oldKey);
+            const metadataStr = await client.get(metadataKey);
+            if (metadataStr) {
+                const metadata = JSON.parse(metadataStr);
+                if (metadata.parentKey) {
+                    parentKeyMap.set(oldKey, metadata.parentKey);
+                }
+            }
+        }
+
         const pipeline = client.multi();
 
         for (const keyToDelete of keysToDelete) {
