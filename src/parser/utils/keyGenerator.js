@@ -58,6 +58,16 @@ function generateChildrenKey(parentKey) {
 }
 
 /**
+ * Generate a metadata key for storing object metadata
+ * Used to store parent-child relationships and other metadata
+ * @param {string} key - The object's key
+ * @returns {string} Key for storing metadata
+ */
+function generateMetadataKey(key) {
+  return `${key}:metadata`;
+}
+
+/**
  * Check if a key represents a specific object type
  * @param {string} key - Redis key to check
  * @param {string} objectType - Object type to match
@@ -76,5 +86,6 @@ module.exports = {
   generateKey,
   parseKey,
   generateChildrenKey,
+  generateMetadataKey,
   isKeyOfType
 };

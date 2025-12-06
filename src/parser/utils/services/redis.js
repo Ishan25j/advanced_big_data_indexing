@@ -8,9 +8,27 @@ const client = createClient({
   password: process.env.REDIS_PASSWORD || 'advanced_data_indexing',
 });
 
-// client.on('error', (err) => {
-//   console.error('Redis error:', err);
-// });
+// Error handler for Redis connection issues
+client.on('error', (err) => {
+  console.error('Redis error:', err);
+});
+
+// Connection event handlers for monitoring
+client.on('connect', () => {
+  console.log('Redis client connected');
+});
+
+client.on('ready', () => {
+  console.log('Redis client ready');
+});
+
+client.on('reconnecting', () => {
+  console.warn('Redis client reconnecting...');
+});
+
+client.on('end', () => {
+  console.warn('Redis connection closed');
+});
 
 async function connectRedis() {
   if (!client.isOpen) {

@@ -7,6 +7,7 @@ const amqp = require('amqplib');
 const RABBITMQ_URL = process.env.RABBITMQ_URL || 'amqp://admin:admin@localhost:5672';
 const EXCHANGE_NAME = 'index_exchange';
 const QUEUE_NAME = 'index_queue';
+const DLQ_NAME = 'index_queue_dlq';  // Dead Letter Queue
 const ROUTING_KEY = 'index.operation';
 
 let connection = null;
@@ -64,7 +65,15 @@ async function createChannel() {
 
     await channel.bindQueue(QUEUE_NAME, EXCHANGE_NAME, ROUTING_KEY);
 
-    console.log('RabbitMQ: Exchange and queue setup complete');
+    // Create Dead Letter Queue for failed messages
+    await channel.assertQueue(DLQ_NAME, {
+      durable: true,
+      arguments: {
+        'x-message-ttl': 86400000  // Messages expire after 24 hours (optional cleanup)
+      }
+    });
+
+    console.log('RabbitMQ: Exchange, main queue, and DLQ setup complete');
 
     return channel;
   } catch (error) {
@@ -105,5 +114,6 @@ module.exports = {
   close,
   EXCHANGE_NAME,
   QUEUE_NAME,
+  DLQ_NAME,
   ROUTING_KEY
 };

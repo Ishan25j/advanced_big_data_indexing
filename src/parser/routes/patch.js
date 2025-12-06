@@ -4,7 +4,7 @@ const { client, connectRedis } = require('../utils/services/redis');
 const etag = require('../utils/etag/etag');
 const validateValidJson = require('../middleware/validate_valid_json');
 const validateGoogleToken = require('../middleware/auth');
-const { generateKey, generateChildrenKey } = require('../utils/keyGenerator');
+const { generateKey, generateChildrenKey, generateMetadataKey } = require('../utils/keyGenerator');
 const { decompose, recompose } = require('../utils/objectDecomposer');
 const { publishIndexUpdate } = require('../../events/publisher');
 
@@ -36,7 +36,7 @@ async function fetchObjectWithChildren(key, objectMap = new Map()) {
         objectMap.set(parsedData.objectId, parsedData);
     }
 
-    const metadataKey = key + ':metadata';
+    const metadataKey = generateMetadataKey(key);
     const metadata = await client.get(metadataKey);
     
     if (metadata) {
@@ -70,7 +70,7 @@ async function collectKeysToDelete(key, keysToDelete = []) {
 
     keysToDelete.push(key);
     keysToDelete.push(childrenKey);
-    keysToDelete.push(key + ':metadata');
+    keysToDelete.push(generateMetadataKey(key));
 
     return keysToDelete;
 }
@@ -87,7 +87,6 @@ router.patch('/:objectId', validateGoogleToken, validateValidJson, async (req, r
         const result = await fetchObjectWithChildren(key);
 
         if (!result) {
-            await client.quit();
             return res.status(404).send("Not Found");
         }
 
@@ -99,7 +98,6 @@ router.patch('/:objectId', validateGoogleToken, validateValidJson, async (req, r
             const normalizedIfMatch = ifMatch.replace(/^"|"$/g, '');
 
             if (normalizedIfMatch !== currentETag) {
-                await client.quit();
                 return res.status(412).send("Precondition Failed: Resource has been modified");
             }
         }
@@ -126,7 +124,7 @@ router.patch('/:objectId', validateGoogleToken, validateValidJson, async (req, r
                 pipeline.sAdd(childrenKey, obj.children);
             }
 
-            const metadataKey = obj.key + ':metadata';
+            const metadataKey = generateMetadataKey(obj.key);
             const metadata = {
                 objectType: obj.objectType,
                 objectId: obj.objectId,
@@ -144,7 +142,6 @@ router.patch('/:objectId', validateGoogleToken, validateValidJson, async (req, r
 
         const newETag = etag(JSON.stringify(mergedObject));
         res.set('ETag', newETag);
-        await client.quit();
 
         return res.status(200).json({
             message: "Object patched successfully",
@@ -158,7 +155,6 @@ router.patch('/:objectId', validateGoogleToken, validateValidJson, async (req, r
     } catch (err) {
         console.error('Error patching object:', err);
         if (client.isOpen) {
-            await client.quit();
         }
         return res.status(500).json({ error: 'Internal server error', message: err.message });
     }

@@ -5,3 +5,13 @@ coverage
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+
+# Process IDs
+.api.pid
+.consumer.pid
+
+# Logs
+logs/
+
+# Documentation
+docs/
