@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const { client, connectRedis } = require('../utils/services/redis');
 const validateGoogleToken = require('../middleware/auth');
-const { generateKey, generateChildrenKey } = require('../utils/keyGenerator');
+const { generateKey, generateChildrenKey, generateMetadataKey } = require('../utils/keyGenerator');
 const { publishIndexDelete } = require('../../events/publisher');
 
 async function cascadeDelete(key, keysToDelete = [], parentKeyMap = new Map()) {
@@ -12,7 +12,7 @@ async function cascadeDelete(key, keysToDelete = [], parentKeyMap = new Map()) {
     }
 
     // Get metadata to store parent relationship before deletion
-    const metadataKey = key + ':metadata';
+    const metadataKey = generateMetadataKey(key);
     const metadataStr = await client.get(metadataKey);
     if (metadataStr) {
         const metadata = JSON.parse(metadataStr);
@@ -46,7 +46,6 @@ router.delete('/:objectId', validateGoogleToken, async (req, res) => {
         
         const data = await client.get(key);
         if (!data) {
-            await client.quit();
             return res.status(404).send("Not Found");
         }
         
@@ -74,15 +73,11 @@ router.delete('/:objectId', validateGoogleToken, async (req, res) => {
         // parentKeyMap contains parent relationships for proper routing
         await publishIndexDelete(key, childKeys, parentKeyMap);
         
-        await client.quit();
         
         return res.status(204).send();
         
     } catch (err) {
         console.error('Error deleting object:', err);
-        if (client.isOpen) {
-            await client.quit();
-        }
         return res.status(500).json({ error: 'Internal server error', message: err.message });
     }
 });

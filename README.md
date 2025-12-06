@@ -27,12 +27,14 @@ A production-ready RESTful API for managing healthcare plans with advanced big d
 - ✅ **Storage Mode Toggle** - MINIMAL (reference format) or FULL (complete objects)
 - ✅ **Real-time Search** - Complex queries including parent-child relationships
 - ✅ **Retry Logic** - Automatic retry on indexing failures (max 3 attempts)
+- ✅ **Dead Letter Queue (DLQ)** - Failed messages stored for replay and investigation
 - ✅ **PATCH to Index** - Partial updates propagate to Elasticsearch
 
 ### Security & Performance
 - ✅ **Google OAuth 2.0** - Secure authentication with RS256 token signing
-- ✅ **Redis Storage** - Fast in-memory key-value store
-- ✅ **Atomic Operations** - Redis pipelines ensure data consistency
+- ✅ **Redis Storage** - Fast in-memory key-value store with persistent connection pooling
+- ✅ **Atomic Operations** - Redis pipelines and SET NX prevent race conditions
+- ✅ **Graceful Shutdown** - Clean resource cleanup on process termination
 
 ---
 
@@ -89,7 +91,7 @@ ES_STORAGE_MODE=FULL
 GOOGLE_CLIENT_ID=your-google-client-id.apps.googleusercontent.com
 ```
 
-**Important**: Configure Google OAuth 2.0 credentials from [Google Cloud Console](https://console.cloud.google.com/apis/credentials). See [AUTHENTICATION.md](./AUTHENTICATION.md) for detailed setup.
+**Important**: Configure Google OAuth 2.0 credentials from [Google Cloud Console](https://console.cloud.google.com/apis/credentials). See [docs/AUTHENTICATION.md](./docs/AUTHENTICATION.md) for detailed setup.
 
 ### 4. Start Services with Docker Compose
 
@@ -105,6 +107,34 @@ This starts:
 
 ### 5. Start the Application
 
+#### Option 1: Quick Start (Recommended)
+
+Use the provided startup script to start all services automatically:
+
+```bash
+./run.sh
+```
+
+This will:
+1. Start Docker containers (RabbitMQ, Redis, Elasticsearch)
+2. Wait for all services to be ready
+3. Start the API server (background process)
+4. Start the RabbitMQ consumer (background process)
+5. Save process IDs and create log files
+
+**To stop all services:**
+```bash
+./stop.sh
+```
+
+**View logs:**
+```bash
+tail -f logs/api.log      # API server logs
+tail -f logs/consumer.log # Consumer logs
+```
+
+#### Option 2: Manual Start
+
 ```bash
 # Terminal 1: Start API server
 pnpm dev
@@ -113,7 +143,7 @@ pnpm dev
 node src/consumer.js
 ```
 
-**Servers:**
+**Service URLs:**
 - API: `http://localhost:3000`
 - RabbitMQ Management: `http://localhost:15672` (admin/admin)
 - Kibana Dev Tools: `http://localhost:5601/app/dev_tools#/console`
@@ -456,7 +486,7 @@ POST http://localhost:3000/v1/plan
 
 **Note:** Both modes are **functionally equivalent** for search queries! The difference is only in what data is stored in Elasticsearch documents.
 
-📝 **Detailed comparison**: See [ES_STORAGE_MODES.md](./ES_STORAGE_MODES.md)
+📝 **Detailed comparison**: See [docs/ES_STORAGE_MODES.md](./docs/ES_STORAGE_MODES.md)
 
 ---
 
@@ -468,12 +498,15 @@ POST http://localhost:3000/v1/plan
 API POST/PATCH Request
        ↓
 1. Validate & Decompose
-2. Store in Redis
+2. Store in Redis (atomic SET NX prevents race conditions)
 3. Publish to RabbitMQ Queue ← queue: index_queue
        ↓
 Consumer (node src/consumer.js)
        ↓
 4. Index to Elasticsearch
+   ├── Success → ACK message
+   └── Failure → Retry (max 3 attempts)
+                 └── Still failing? → Send to Dead Letter Queue (DLQ)
 ```
 
 ### Delete Flow
@@ -487,8 +520,25 @@ API DELETE Request
        ↓
 Consumer
        ↓
-4. Delete from Elasticsearch (cascaded)
+4. Delete from Elasticsearch (cascaded with parent routing)
+   ├── Success → ACK message
+   └── Failure → Retry → DLQ if max retries exceeded
 ```
+
+### Dead Letter Queue (DLQ)
+
+Messages are sent to the DLQ (`index_queue_dlq`) when:
+- Max retries exceeded (3 attempts)
+- Malformed JSON (cannot be parsed)
+- Persistent processing errors
+
+**DLQ Features:**
+- 24-hour message retention
+- Rich failure metadata (reason, timestamp, retry count)
+- Manual replay capability via RabbitMQ UI
+- Monitoring via RabbitMQ Management Console
+
+📝 **DLQ Usage Guide**: See [docs/DLQ_USAGE_GUIDE.md](./docs/DLQ_USAGE_GUIDE.md)
 
 ---
 
@@ -550,16 +600,16 @@ GET /healthcare_plans/_search
 .
 ├── src/
 │   ├── app.js                 # Express app setup
-│   ├── index.js               # Server entry point
+│   ├── index.js               # Server entry point (with graceful shutdown)
 │   ├── consumer.js            # RabbitMQ consumer starter
 │   ├── events/                # Queuing & Indexing
-│   │   ├── rabbitmq.js        # RabbitMQ connection
+│   │   ├── rabbitmq.js        # RabbitMQ connection + DLQ setup
 │   │   ├── publisher.js       # Publish index operations
-│   │   ├── consumer.js        # Consume & index to ES
+│   │   ├── consumer.js        # Consume & index to ES (with DLQ)
 │   │   └── elasticsearch.js   # ES client & operations
 │   └── parser/
 │       ├── routes/            # API endpoints
-│       │   ├── create.js      # POST /v1/plan
+│       │   ├── create.js      # POST /v1/plan (with race condition fix)
 │       │   ├── get.js         # GET /v1/plan/:id
 │       │   ├── update.js      # PUT /v1/plan/:id
 │       │   ├── patch.js       # PATCH /v1/plan/:id
@@ -571,8 +621,18 @@ GET /healthcare_plans/_search
 │           ├── keyGenerator.js        # Generate Redis keys
 │           ├── objectDecomposer.js    # Decompose nested JSON
 │           ├── etag/etag.js           # ETag generation
-│           ├── services/redis.js      # Redis client
+│           ├── services/redis.js      # Redis persistent connection
 │           └── models/schema.json     # JSON schema
+├── docs/                      # Documentation
+│   ├── AUTHENTICATION.md      # Google OAuth setup
+│   ├── ES_STORAGE_MODES.md    # Storage mode comparison
+│   ├── DLQ_USAGE_GUIDE.md     # Dead Letter Queue guide
+│   └── BUG_FIXES_2025-12-06.md # Recent bug fixes
+├── logs/                      # Application logs (gitignored)
+│   ├── api.log               # API server logs
+│   └── consumer.log          # Consumer logs
+├── run.sh                     # Startup script
+├── stop.sh                    # Shutdown script
 ├── docker-compose.yml         # Services config
 ├── elasticsearch_queries.txt  # 40+ test queries
 ├── package.json
@@ -588,20 +648,40 @@ GET /healthcare_plans/_search
 | REST API with CRUD | ✅ | All routes in `src/parser/routes/` |
 | Handle structured JSON | ✅ | JSON schema validation |
 | Merge support | ✅ | Deep merge in PATCH route |
-| Cascaded delete | ✅ | Recursive delete from KV + ES |
+| Cascaded delete | ✅ | Recursive delete from KV + ES with parent routing |
 | Validation | ✅ | JSON Schema Draft 7 + AJV |
 | Update if not changed | ✅ | ETag with If-Match header |
-| Key-value store | ✅ | Redis with hierarchical keys |
-| Parent-child indexing | ✅ | ES join field with relations |
+| Key-value store | ✅ | Redis with hierarchical keys + persistent connection |
+| Parent-child indexing | ✅ | ES join field with relations (MINIMAL & FULL modes) |
 | PATCH to index | ✅ | Queue → Consumer → ES |
-| Queueing | ✅ | RabbitMQ with retry logic |
-| Security | ✅ | Google OAuth 2.0 |
+| Queueing | ✅ | RabbitMQ with retry logic + Dead Letter Queue |
+| Security | ✅ | Google OAuth 2.0 + Race condition prevention |
+
+## 🆕 Recent Improvements (December 2025)
+
+| Improvement | Description |
+|-------------|-------------|
+| **Redis Connection Management** | Fixed connection leak by implementing persistent connection pooling |
+| **Race Condition Fix** | Atomic SET NX operation prevents duplicate object creation |
+| **Dead Letter Queue** | Failed messages stored with rich metadata for replay and investigation |
+| **Graceful Shutdown** | Clean resource cleanup on SIGTERM/SIGINT signals |
+| **Metadata Key Consistency** | Centralized `generateMetadataKey()` utility for consistent key generation |
+| **Consumer Reliability** | Fixed async/await bugs and JSON parse error handling |
+| **Startup Scripts** | `run.sh` and `stop.sh` for easy service management |
+
+📝 **Full details**: See [docs/BUG_FIXES_2025-12-06.md](./docs/BUG_FIXES_2025-12-06.md)
 
 ---
 
 ## 🔧 Useful Commands
 
 ```bash
+# Quick Start/Stop
+./run.sh                  # Start everything (Docker + API + Consumer)
+./stop.sh                 # Stop everything gracefully
+tail -f logs/api.log      # View API logs
+tail -f logs/consumer.log # View consumer logs
+
 # Development
 pnpm install              # Install dependencies
 pnpm dev                  # Start API server
@@ -618,13 +698,16 @@ docker exec -it redis_server redis-cli -a advanced_data_indexing
 > KEYS *
 > GET plan:plan123
 > SMEMBERS plan:plan123:children
+> GET plan:plan123:metadata
 
 # RabbitMQ
-open http://localhost:15672   # Management UI
+open http://localhost:15672   # Management UI (admin/admin)
+# View queues: index_queue, index_queue_dlq
 
 # Elasticsearch
 open http://localhost:5601    # Kibana
 curl http://localhost:9200/_cat/indices?v
+curl http://localhost:9200/healthcare_plans/_count
 ```
 
 ---
@@ -636,7 +719,7 @@ curl http://localhost:9200/_cat/indices?v
 **401 Unauthorized**
 - Check Google token validity (tokens expire after ~1 hour)
 - Verify `GOOGLE_CLIENT_ID` in `.env`
-- See [AUTHENTICATION.md](./AUTHENTICATION.md)
+- See [docs/AUTHENTICATION.md](./docs/AUTHENTICATION.md)
 
 **500 Internal Server Error**
 - Check Redis is running: `docker-compose ps`
@@ -657,7 +740,7 @@ curl http://localhost:9200/_cat/indices?v
 - Check `ES_STORAGE_MODE` in `.env` (MINIMAL vs FULL)
 - MINIMAL mode stores minimal metadata (matches reference)
 - FULL mode stores complete objects (better debugging)
-- See [ES_STORAGE_MODES.md](./ES_STORAGE_MODES.md) for details
+- See [docs/ES_STORAGE_MODES.md](./docs/ES_STORAGE_MODES.md) for details
 
 ### RabbitMQ Issues
 
@@ -669,13 +752,22 @@ curl http://localhost:9200/_cat/indices?v
 - Restart consumer: `node src/consumer.js`
 - Check queue has consumers in management UI
 
+**Messages in Dead Letter Queue (DLQ)**
+- Check `index_queue_dlq` in RabbitMQ Management UI
+- Review failure reasons in message headers
+- Fix root cause (e.g., restart Elasticsearch, fix code bug)
+- Replay messages from DLQ back to main queue
+- See [docs/DLQ_USAGE_GUIDE.md](./docs/DLQ_USAGE_GUIDE.md) for detailed procedures
+
 ---
 
 ## 📚 Additional Documentation
 
-- [AUTHENTICATION.md](./AUTHENTICATION.md) - Google OAuth setup guide
-- [ES_STORAGE_MODES.md](./ES_STORAGE_MODES.md) - Elasticsearch storage mode comparison
-- [elasticsearch_queries.txt](./elasticsearch_queries.txt) - 40+ test queries for Kibana
+- **[docs/AUTHENTICATION.md](./docs/AUTHENTICATION.md)** - Google OAuth 2.0 setup guide
+- **[docs/ES_STORAGE_MODES.md](./docs/ES_STORAGE_MODES.md)** - Elasticsearch storage mode comparison (MINIMAL vs FULL)
+- **[docs/DLQ_USAGE_GUIDE.md](./docs/DLQ_USAGE_GUIDE.md)** - Dead Letter Queue usage, monitoring, and replay
+- **[docs/BUG_FIXES_2025-12-06.md](./docs/BUG_FIXES_2025-12-06.md)** - Recent bug fixes and improvements (Dec 2025)
+- **[elasticsearch_queries.txt](./elasticsearch_queries.txt)** - 40+ test queries for Kibana Dev Tools
 
 ---
 

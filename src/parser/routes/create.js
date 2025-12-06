@@ -1,7 +1,7 @@
 const express = require('express');
 const etag = require('../utils/etag/etag');
 const { client, connectRedis } = require('../utils/services/redis');
-const { generateKey, generateChildrenKey } = require('../utils/keyGenerator');
+const { generateKey, generateChildrenKey, generateMetadataKey } = require('../utils/keyGenerator');
 const { decompose } = require('../utils/objectDecomposer');
 const { publishIndexCreate } = require('../../events/publisher');
 
@@ -19,9 +19,16 @@ router.post('/', validateGoogleToken, validateValidJson, async (req, res) => {
     try {
         const rootKey = generateKey(req.body.objectType, req.body.objectId);
 
-        const existingData = await client.get(rootKey);
-        if (existingData) {
-            await client.quit();
+        // Atomic check-and-set using SET NX (set if not exists)
+        // This prevents race conditions where two concurrent requests
+        // could both pass a GET check and create duplicate objects
+        const claimResult = await client.set(rootKey, 'CLAIMED', {
+            NX: true,  // Only set if key doesn't exist
+            EX: 60     // Expire after 60 seconds (safety cleanup if process crashes)
+        });
+
+        if (!claimResult) {
+            // Key already exists - another request won the race
             return res.status(409).send("Object already exists");
         }
 
@@ -37,7 +44,7 @@ router.post('/', validateGoogleToken, validateValidJson, async (req, res) => {
                 pipeline.sAdd(childrenKey, obj.children);
             }
 
-            const metadataKey = obj.key + ':metadata';
+            const metadataKey = generateMetadataKey(obj.key);
             const metadata = {
                 objectType: obj.objectType,
                 objectId: obj.objectId,
@@ -55,8 +62,6 @@ router.post('/', validateGoogleToken, validateValidJson, async (req, res) => {
         const etagValue = etag(JSON.stringify(req.body));
         res.set('ETag', etagValue);
 
-        await client.quit();
-
         return res.status(201).json({
             message: "Object created successfully",
             objectId: req.body.objectId,
@@ -68,9 +73,6 @@ router.post('/', validateGoogleToken, validateValidJson, async (req, res) => {
 
     } catch (error) {
         console.error('Error creating object:', error);
-        if (client.isOpen) {
-            await client.quit();
-        }
         return res.status(500).json({ error: 'Internal server error', message: error.message });
     }
 });

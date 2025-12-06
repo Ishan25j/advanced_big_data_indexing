@@ -3,7 +3,7 @@ const router = express.Router();
 const { client, connectRedis } = require('../utils/services/redis');
 const etag = require('../utils/etag/etag');
 const validateGoogleToken = require('../middleware/auth');
-const { generateKey } = require('../utils/keyGenerator');
+const { generateKey, generateMetadataKey } = require('../utils/keyGenerator');
 const { recompose } = require('../utils/objectDecomposer');
 
 /**
@@ -21,7 +21,7 @@ async function fetchObjectWithChildren(key, objectMap = new Map()) {
         objectMap.set(parsedData.objectId, parsedData);
     }
 
-    const metadataKey = `${key}:metadata`;
+    const metadataKey = generateMetadataKey(key);
     const metadata = await client.get(metadataKey);
     
     if (metadata) {
@@ -54,7 +54,6 @@ router.get('/:objectId', validateGoogleToken, async (req, res) => {
         const result = await fetchObjectWithChildren(key);
         
         if (!result) {
-            await client.quit();
             return res.status(404).send("Not Found");
         }
 
@@ -66,19 +65,14 @@ router.get('/:objectId', validateGoogleToken, async (req, res) => {
         
         // Handle conditional GET (304 Not Modified)
         if (req.headers['if-none-match'] && String(req.headers['if-none-match']) === etagValue) {
-            await client.quit();
             return res.status(304).end();
         }
-        
+
         res.set('ETag', String(etagValue));
-        await client.quit();
         return res.status(200).json(fullObject);
         
     } catch (err) {
         console.error('Error fetching object:', err);
-        if (client.isOpen) {
-            await client.quit();
-        }
         return res.status(500).json({ error: 'Internal server error', message: err.message });
     }
 });

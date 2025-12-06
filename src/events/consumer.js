@@ -5,7 +5,7 @@
  * by indexing/deleting documents in Elasticsearch
  */
 
-const { getChannel, QUEUE_NAME } = require('./rabbitmq');
+const { getChannel, QUEUE_NAME, DLQ_NAME } = require('./rabbitmq');
 const {
   initializeIndex,
   indexDocument,
@@ -19,10 +19,10 @@ const RETRY_DELAY = 5000; // 5 seconds
 
 /**
  * Process a single message from the queue
+ * @param {Object} content - Already parsed message content
  */
-async function processMessage(message) {
+async function processMessage(content) {
   try {
-    const content = JSON.parse(message.content.toString());
     const { operation, data, metadata } = content;
 
     console.log('Processing message:', operation, 'for key:', metadata.key);
@@ -57,17 +57,28 @@ async function processMessage(message) {
  * Handle message retry logic
  */
 async function handleMessage(message, channel) {
+  // Parse message content with error handling
+  let content;
   try {
-    const content = JSON.parse(message.content.toString());
+    content = JSON.parse(message.content.toString());
+  } catch (parseError) {
+    console.error('Failed to parse message JSON:', parseError.message);
+    console.error('Malformed message content:', message.content.toString().substring(0, 200));
+    // Send malformed message to dead letter queue (don't requeue)
+    channel.nack(message, false, false);
+    return;
+  }
+
+  try {
     const retryCount = content.metadata.retryCount || 0;
 
-    await processMessage(message);
+    await processMessage(content);
 
     // Acknowledge successful processing
     channel.ack(message);
 
   } catch (error) {
-    const content = JSON.parse(message.content.toString());
+    console.error('Error processing message:', error.message);
     const retryCount = content.metadata.retryCount || 0;
 
     if (retryCount < MAX_RETRIES) {
@@ -81,9 +92,33 @@ async function handleMessage(message, channel) {
       }, RETRY_DELAY);
 
     } else {
-      // Max retries reached, send to dead letter queue or log
-      console.error('Max retries reached for message, discarding:', content.metadata.key);
-      channel.nack(message, false, false); // Don't requeue
+      // Max retries reached, send to Dead Letter Queue
+      console.error('Max retries reached for message, sending to DLQ:', content.metadata.key);
+
+      try {
+        // Send to DLQ with failure metadata
+        await channel.sendToQueue(DLQ_NAME, message.content, {
+          persistent: true,
+          headers: {
+            'x-original-queue': QUEUE_NAME,
+            'x-failure-reason': error.message,
+            'x-failed-at': new Date().toISOString(),
+            'x-retry-count': retryCount,
+            'x-original-operation': content.operation,
+            'x-original-key': content.metadata.key
+          }
+        });
+
+        console.log('Message sent to DLQ:', content.metadata.key);
+
+        // Acknowledge the original message (remove from main queue)
+        channel.ack(message);
+
+      } catch (dlqError) {
+        console.error('Failed to send message to DLQ:', dlqError.message);
+        // Last resort: nack without requeue to prevent infinite loop
+        channel.nack(message, false, false);
+      }
     }
   }
 }
@@ -115,9 +150,9 @@ async function startConsumer() {
     // Start consuming
     channel.consume(
       QUEUE_NAME,
-      (message) => {
+      async (message) => {
         if (message) {
-          handleMessage(message, channel);
+          await handleMessage(message, channel);
         }
       },
       {
