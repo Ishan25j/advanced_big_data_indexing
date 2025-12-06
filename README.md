@@ -296,6 +296,28 @@ membercostshare:cost456           → Child object data
 membercostshare:cost456:metadata  → Parent: plan:plan123
 ```
 
+#### Current Approach vs. Simple ID-Only Approach
+
+| Aspect | **Current: Type-Prefixed with Metadata** | **Alternative: ID-Only, Embedded** |
+|--------|------------------------------------------|-------------------------------------|
+| **Key Pattern** | `plan:plan123` | `plan123` |
+| **Number of Keys** | 3 per object (main, :children, :metadata) | 1 per object |
+| **Child Tracking** | Separate set: `plan:plan123:children` | Embedded array in main object JSON |
+| **Parent Reference** | Separate key: `cost456:metadata` → `{"parentKey": "plan:plan123"}` | Embedded in object: `{"_parent": "plan123"}` |
+| **Type Collision** | ✅ Safe: `plan:123` ≠ `service:123` | ❌ Risk: `123` could be plan or service |
+| **Get Children** | `SMEMBERS plan:plan123:children` (O(1)) | Parse object JSON, extract array (O(n)) |
+| **Cascade Delete** | Iterate :children set, delete each | Scan all keys, parse JSON to find children |
+| **Check Has Children** | `EXISTS plan:plan123:children` | Fetch full object, parse JSON |
+| **Pattern Search** | `KEYS plan:*` finds all plans | `KEYS *` then filter by parsing each |
+| **Storage Overhead** | Higher (3 keys per object) | Lower (1 key per object) |
+| **Query Performance** | ✅ Fast (dedicated keys) | ❌ Slower (requires JSON parsing) |
+
+**Why We Chose the Current Approach:**
+- **Performance**: O(1) child lookup vs. scanning/parsing all keys
+- **Type Safety**: Prevents ID collisions across object types
+- **Cascade Delete**: Essential for DELETE endpoint efficiency
+- **Code Clarity**: Explicit parent-child relationships vs. embedded references
+
 ### Parent-Child Relationships
 
 ```
