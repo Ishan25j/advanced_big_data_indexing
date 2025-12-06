@@ -485,7 +485,7 @@ node src/consumer.js
 
 **4. Re-index data:**
 ```bash
-# Create your plans again via API
+# Create your plans again via API 
 POST http://localhost:3000/v1/plan
 ```
 
