@@ -95,13 +95,16 @@ async function publishIndexDelete(key, childKeys = [], parentKeyMap = new Map())
       });
     }
 
-    // Publish delete for the root object
-    await publishIndexOperation(OPERATIONS.DELETE, null, {
-      key,
-      childKeys
-    });
-
-    console.log('Published delete operation for:', key, 'with children:', childKeys.length);
+    // Publish delete for the root object (if provided)
+    if (key) {
+      await publishIndexOperation(OPERATIONS.DELETE, null, {
+        key,
+        childKeys
+      });
+      console.log('Published delete operation for:', key, 'with children:', childKeys.length);
+    } else {
+      console.log('Published delete operation for', childKeys.length, 'children only');
+    }
   } catch (error) {
     console.error('Error publishing index delete:', error);
     throw error;
